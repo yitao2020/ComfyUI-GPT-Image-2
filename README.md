@@ -2,6 +2,10 @@
 
 基于 [apiyi.com](https://api.apiyi.com) 的 **GPT Image 2**（OpenAI 旗舰图像生成模型）的 ComfyUI 插件。
 
+> **下图由本插件生成**：4K 画质，16 格篮球训练动作示意图，展示了 GPT Image 2 在多主体、复杂构图和中文文字渲染上的能力。
+
+![GPT Image 2 生成示例 - 篮球训练动作示意图](assets/gpt-image2-example.jpg)
+
 ## 功能特性
 
 | 特性 | 说明 |
