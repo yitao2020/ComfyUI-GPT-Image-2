@@ -13,6 +13,7 @@
 | **文生图** | 输入文本提示词生成图片 |
 | **图片编辑** | 上传参考图 + 编辑指令生成新图片 |
 | **多图融合** | 支持最多 5 张参考图同时输入 |
+| **批量并发生成** | 一次最多生成 9 张，并发请求，输出为 batch |
 | **Mask 局部重绘** | 支持透明蒙版局部重绘 |
 | **精确尺寸控制** | 8 种预设尺寸 + 自定义（最大 4K） |
 | **画质档位** | low / medium / high / auto |
@@ -35,7 +36,7 @@
 
 ```bash
 cd D:\ComfyUI\custom_nodes
-git clone https://github.com/your-repo/ComfyUI-GPT-Image-2.git
+git clone https://github.com/yitao2020/ComfyUI-GPT-Image-2.git
 cd ComfyUI-GPT-Image-2
 pip install -r requirements.txt
 ```
@@ -48,7 +49,10 @@ pip install -r requirements.txt
 
 首次使用时，在节点中输入您的 API 密钥（格式：`sk-xxxxxx`）。
 
-密钥会自动保存到节点目录的 `api_key.txt` 文件中，后续使用无需重复输入。
+> ⚠️ **密钥不会被自动写入磁盘**。节点只会在你输入时把密钥用于当次请求，不会保存。
+>
+> 如果你希望免重复输入，可以**手动**在节点目录下创建 `api_key.txt`，把密钥单独写进一行。
+> 该文件已在 `.gitignore` 中，**不会被提交到仓库**，但仍建议你不要把它放在共享目录里。
 
 ## 节点参数说明
 
@@ -98,6 +102,18 @@ pip install -r requirements.txt
 | `input_image` | 输入图像，用于编辑或多图融合 |
 | `mask_image` | 蒙版图，透明区域将重绘（仅对第一张图生效） |
 | `seed` | 随机种子，0 每次生成新图像 |
+| `num_images` | 生成数量，1-9 下拉选择（默认 1） |
+
+### 批量生成（`num_images`）
+
+`num_images > 1` 时，节点会**并发**发起 N 个独立请求，把结果合并成一个 batch 输出（可直接接 PreviewImage / SaveImage 批量预览保存）。
+
+- 并发线程数 = `min(num_images, 9)`，总耗时接近单张耗时，而不是单张 × N
+- 返回值尺寸不一致时（例如 `size=auto`），会自动统一缩放到第一张的尺寸再合并
+- 部分请求失败时仍会输出成功的部分，并在 `info` 中提示失败数量；全部失败才返回空图
+- `info` 中的 Token 使用量是 N 张的**合计值**
+
+> ⚠️ **成本与限流**：生成 N 张 = N 倍计费。并发过高可能触发上游 429 限流，建议首次使用时先用 2-3 张试水。
 
 ## 使用示例
 
@@ -135,12 +151,22 @@ pip install -r requirements.txt
 
 > MASK 要求：与原图相同尺寸，带 alpha 通道，透明区域 = 要重绘的部分
 
+### 5. 批量生成
+
+把 `num_images` 设为 4，接上 PreviewImage 即可一次预览 4 张：
+
+```
+1:1 方形构图，一只穿着汉服的猫站在故宫红墙前，摄影质感
+```
+
+输出为 shape `[4, H, W, 3]` 的 batch，可直接接 SaveImage 批量保存。
+
 ## 输出节点
 
 | 节点 | 类型 | 说明 |
 |------|------|------|
-| `IMAGE` | tensor | 生成的图像 |
-| `STRING` | text | 生成信息和 Token 使用量 |
+| `IMAGE` | tensor | 生成的图像，`num_images=N` 时为 N 张的 batch |
+| `STRING` | text | 生成信息和 Token 使用量（批量时为合计） |
 
 ## 注意事项
 
@@ -173,7 +199,7 @@ GPT Image 2 接受自定义尺寸，需同时满足：
 | 400 | 参数非法 | 检查 size 是否符合约束；不要传 input_fidelity |
 | 401 | 令牌无效 | 检查 Bearer Token |
 | 403 | 内容审核拦截 | 调整 prompt |
-| 429 | 限流/余额不足 | 指数退避重试 |
+| 429 | 限流/余额不足 | 指数退避重试；批量生成时降低 `num_images` |
 | 5xx | 服务端错误 | 重试 1-2 次 |
 | 超时 | 高峰偶发 | 等待后重试 |
 
