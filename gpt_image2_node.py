@@ -2,6 +2,7 @@ import os
 import base64
 import io
 import json
+import re
 import torch
 import numpy as np
 from PIL import Image
@@ -13,9 +14,14 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from comfy.utils import ProgressBar
 
+from .model_config import (
+    MODEL_OPTIONS, DEFAULT_MODEL, ALL_SIZES, ALL_QUALITIES,
+    MODEL_REGISTRY, resolve_model, sanitize_quality, sanitize_size, registry_payload,
+)
+
 
 class GPTImage2Node:
-    """GPT Image 2 图像生成节点 - OpenAI 旗舰图像生成模型"""
+    """GPT Image 2 / 2.5 图像生成节点（支持 2.0 与 2.5 模型切换）"""
 
     # API 端点
     API_ENDPOINTS = {
@@ -23,58 +29,52 @@ class GPTImage2Node:
         "image_edit": "/v1/images/edits",             # 图片编辑/多图融合
     }
 
-    # 模型名
-    MODEL_NAME = "gpt-image-2"
+    # 模型下拉（2.0 / 2.5 混排，具体能力见 model_config.MODEL_REGISTRY）
+    MODELS = MODEL_OPTIONS
+    DEFAULT_MODEL = DEFAULT_MODEL
 
-    # 预设尺寸（预设尺寸经过官方优化，速度和质量更稳定）
-    SIZES = [
-        "auto",              # 自适应
-        "1024x1024",         # 方形 1:1 (1K)
-        "1536x1024",          # 横版 3:2 (1K)
-        "1024x1536",          # 竖版 2:3 (1K)
-        "2048x2048",          # 方形 1:1 (2K)
-        "2048x1152",          # 横版 16:9 (2K)
-        "3840x2160",          # 横版 4K
-        "2160x3840",          # 竖版 4K
-    ]
+    # 尺寸下拉：2.0 / 2.5 共用同一份并集，前端 JS 会按模型收窄
+    SIZES = ALL_SIZES
 
-    # 画质档位
-    QUALITIES = [
-        "auto",    # 自动（默认）
-        "low",     # 草图/批量生成
-        "medium",  # 日常使用
-        "high",    # 终稿/精细文字/印刷
-    ]
+    # 画质下拉：2.5 多出 xhigh / max 两档（3 档 vs 6 档）
+    QUALITIES = ALL_QUALITIES
+
+    # 背景（仅部分模型 / 通道支持 transparent -> alpha PNG）
+    BACKGROUNDS = ["auto", "transparent", "opaque"]
 
     # 输出格式
     OUTPUT_FORMATS = ["png", "jpeg", "webp"]
 
     # 生成图像数量（1-9，下拉选择；多张时并发请求）
+    # 注意：上游不支持真正的多图返回（n 字段会被计费但不生效），
+    # 这里的 N 张一律由本节点并发发 N 个独立请求后合并成 batch。
     MAX_IMAGES = 9
     NUM_IMAGES_OPTIONS = [str(i) for i in range(1, MAX_IMAGES + 1)]
 
     # 压缩质量范围
     COMPRESSION_VALUES = list(range(0, 101, 5))
 
+    # 合法尺寸格式（小写 x）
+    SIZE_RE = re.compile(r"^\d{2,5}x\d{2,5}$")
+
     # 超时设置（秒）- high + 2K/4K 实测可能 3-5 分钟
     DEFAULT_TIMEOUT = 360
 
-    # 尺寸提示
+    # 提示词默认提示
     SIZE_HINTS = """📐 尺寸推荐（预设尺寸速度和质量更稳定）：
-┌─────────────────────────────────────────┐
-│ 1K  方形: 1024x1024  |  横版: 1536x1024 │
-│ 1K  竖版: 1024x1536                      │
-│ 2K  方形: 2048x2048  |  横版: 2048x1152 │
-│ 4K  横版: 3840x2160  |  竖版: 2160x3840 │
-│ 自适应: auto                              │
-└─────────────────────────────────────────┘
+┌──────────────────────────────────────────┐
+│ 1K: 1280x1280 / 1280x848 / 848x1280      │
+│ 2K: 2048x2048 / 2048x1360 / 1152x2048    │
+│ 4K: 2880x2880 / 3840x2160 / 2160x3840    │
+│ 详见下拉框，共 30 种官方预设，4K 不加价  │
+└──────────────────────────────────────────┘
 
-🎯 画质建议：
-• low: 草图/批量测试
-• medium: 日常使用（默认）
-• high: 文字/精细纹理/印刷
+🎯 画质建议（2.5 比 2.0 多 xhigh / max）：
+• low / medium: 草稿、批量测试
+• high: 日常使用（2.5 的 high ≈ 2.0 的 medium）
+• xhigh / max: 2.5 专属，max ≈ 2.0 的 high 档 token 量
 
-请输入您的提示词...""" 
+请输入您的提示词..."""
 
     @classmethod
     def INPUT_TYPES(cls):
@@ -85,6 +85,7 @@ class GPTImage2Node:
                     "multiline": False,
                     "placeholder": "sk-your-api-key"
                 }),
+                "model": (cls.MODELS, {"default": cls.DEFAULT_MODEL}),
                 "prompt": ("STRING", {
                     "multiline": True,
                     "default": cls.SIZE_HINTS
@@ -110,6 +111,8 @@ class GPTImage2Node:
                     "step": 1,
                     "display": "number"
                 }),
+                # 仅部分模型/通道支持 transparent（返回 alpha PNG），不支持时会被自动丢弃
+                "background": (cls.BACKGROUNDS, {"default": "auto"}),
                 # 放在最后一个 optional，渲染时位于节点底部
                 "num_images": (cls.NUM_IMAGES_OPTIONS, {"default": "1"}),
             }
@@ -212,10 +215,11 @@ class GPTImage2Node:
             return None
 
     def base64_to_image(self, base64_str):
-        """将纯 base64 字符串转换为 ComfyUI 图像张量"""
+        """将 base64 字符串（兼容带 data: 前缀）转换为 ComfyUI 图像张量"""
         try:
-            # GPT Image 2 返回的是纯 base64（无前缀）
-            # 不需要处理逗号分隔的情况
+            if base64_str.startswith("data:"):
+                base64_str = base64_str.split(",", 1)[-1]
+
             image_bytes = base64.b64decode(base64_str)
             pil_image = Image.open(BytesIO(image_bytes))
 
@@ -229,6 +233,53 @@ class GPTImage2Node:
             self.log(f"base64转换图像失败: {e}")
             traceback.print_exc()
             return None
+
+    # ============ 模型解析 ============
+
+    # ============ 输入兜底 ============
+    # 老工作流加载时 widgets_values 可能整体错位（见 js/gpt_image2.js 的迁移说明），
+    # 这里保证任何脏值都只会退化成默认值，不会让节点抛异常。
+
+    @staticmethod
+    def as_int(value, default, low=None, high=None):
+        """宽松转 int，失败或越界都回退到 default"""
+        try:
+            v = int(value)
+        except (TypeError, ValueError):
+            return default
+        if low is not None:
+            v = max(low, v)
+        if high is not None:
+            v = min(high, v)
+        return v
+
+    @staticmethod
+    def as_choice(value, choices, default):
+        """宽松取值，不在候选里就回退到 default"""
+        if value in choices:
+            return value
+        return default
+
+    def prepare_model(self, model_key, quality, size):
+        """解析模型 -> (model_id, cfg, real_quality, real_size)"""
+        model_key = model_key if isinstance(model_key, str) and model_key.strip() else DEFAULT_MODEL
+        model_id, cfg = resolve_model(model_key)
+        self.log(f"模型: {model_id}  [{cfg['version']} · {cfg['line']}]  {cfg.get('note', '')}")
+
+        # size 必须是 WxH 或 auto，否则说明值错位了，直接用该模型的默认尺寸
+        size = size if isinstance(size, str) else ""
+        if not (self.SIZE_RE.match(size) or size == "auto"):
+            if size:
+                self.log(f"⚠️ size='{size}' 不是合法尺寸，回退为 {cfg['default_size']}")
+            size = cfg["default_size"]
+
+        real_quality, quality_changed = sanitize_quality(model_id, cfg, quality, self.log)
+        real_size, _ = sanitize_size(cfg, size, self.log)
+
+        if quality_changed:
+            self.log(f"quality 实际发送: {real_quality}")
+
+        return model_id, cfg, real_quality, real_size
 
     # ============ 批量生成（并发）相关方法 ============
 
@@ -268,34 +319,49 @@ class GPTImage2Node:
         self.log(f"已合并 {batch.shape[0]} 张图像为 batch")
         return batch
 
-    def build_request(self, endpoint, prompt, size, quality, output_format, output_compression,
+    def apply_common_params(self, payload, size, quality, output_format, output_compression):
+        """往 payload 里塞公共参数（文生图 / 编辑端点共用）"""
+        payload["size"] = size
+        payload["quality"] = quality
+        payload["output_format"] = output_format
+        if output_format != "png" and output_compression < 100:
+            payload["output_compression"] = output_compression
+
+    def build_request(self, endpoint, model_id, cfg, prompt, size, quality,
+                      output_format, output_compression, background,
                       input_image=None, mask_image=None):
         """
         构建单次请求所需的 body 与 files。
         多张并发时复用同一份数据（bytes 在内存中可重复读取，线程安全）。
+
+        注意：这里**不发送 n 字段**。上游发了 n 也只返回 1 张却按 N 张计费，
+        多图一律由本节点并发 N 个独立请求实现。
         """
+        if background and background != "auto":
+            if cfg.get("background"):
+                self.log(f"背景: {background}（返回 {'透明通道 PNG' if background == 'transparent' else '不透明'}）")
+            else:
+                self.log(f"⚠️ {model_id} 不支持 background 参数，已忽略")
+                background = "auto"
+
         if endpoint == self.API_ENDPOINTS["text_to_image"]:
             payload = {
-                "model": self.MODEL_NAME,
+                "model": model_id,
                 "prompt": prompt,
-                "size": size,
-                "quality": quality,
-                "output_format": output_format,
             }
-            if output_format != "png" and output_compression < 100:
-                payload["output_compression"] = output_compression
+            self.apply_common_params(payload, size, quality, output_format, output_compression)
+            if background != "auto":
+                payload["background"] = background
             return payload, None
 
         # === 图片编辑端点 (multipart/form-data) ===
         data = {
-            "model": self.MODEL_NAME,
+            "model": model_id,
             "prompt": prompt,
-            "size": size,
-            "quality": quality,
-            "output_format": output_format,
         }
-        if output_format != "png" and output_compression < 100:
-            data["output_compression"] = output_compression
+        self.apply_common_params(data, size, quality, output_format, output_compression)
+        if background != "auto":
+            data["background"] = background
 
         files_list = []
 
@@ -368,7 +434,7 @@ class GPTImage2Node:
 
         b64_data = data_list[0].get("b64_json")
         if not b64_data:
-            return None, usage, "响应中未找到 b64_json 字段", elapsed
+            return None, usage, "响应中未找到 b64_json 字段（如需 URL 输出请把 token 分组切到 image2_OSS）", elapsed
 
         img_tensor = self.base64_to_image(b64_data)
         if img_tensor is None:
@@ -377,10 +443,19 @@ class GPTImage2Node:
         return img_tensor, usage, "", elapsed
 
     def generate_image(self, api_key, prompt, size, quality, output_format, output_compression,
-                      input_image=None, mask_image=None, seed=0, num_images="1"):
-        """生成图像的主函数（支持 1-9 张并发生成）"""
+                      model=None, input_image=None, mask_image=None, seed=0,
+                      background="auto", num_images="1"):
+        """生成图像的主函数（支持 GPT Image 2.0 / 2.5，1-9 张并发生成）"""
         self.log_messages = []
+
+        # --- 输入兜底：老工作流参数错位时退化成默认值，而不是抛异常 ---
+        seed = self.as_int(seed, 0, 0, 0xffffffffffffffff)
         n = self.normalize_num_images(num_images)
+        output_compression = self.as_int(output_compression, 85, 0, 100)
+        output_format = self.as_choice(output_format, self.OUTPUT_FORMATS, "png")
+        background = self.as_choice(background, self.BACKGROUNDS, "auto")
+        if not isinstance(prompt, str):
+            prompt = "" if prompt is None else str(prompt)
 
         try:
             # 获取API密钥
@@ -394,9 +469,16 @@ class GPTImage2Node:
 
             self.log("=== GPT Image 2 开始生成 ===")
             self.log(f"Seed: {seed}")
-            self.log(f"生成数量: {n} 张" + ("（并发请求）" if n > 1 else ""))
-            self.log(f"尺寸: {size}")
-            self.log(f"画质: {quality}")
+            self.log(f"生成数量: {n} 张" + ("（并发独立请求，非 API n 参数）" if n > 1 else ""))
+
+            # 解析模型（2.0 / 2.5），并据此收敛 size / quality
+            model_id, cfg, real_quality, real_size = self.prepare_model(
+                model or self.DEFAULT_MODEL, quality, size
+            )
+
+            self.log(f"请求 model 字段: {model_id}")
+            self.log(f"尺寸: {real_size}")
+            self.log(f"画质: {real_quality}")
             self.log(f"输出格式: {output_format}" + (f" (压缩: {output_compression})" if output_format != "png" else ""))
             self.log(f"提示词: {prompt[:80]}..." if len(prompt) > 80 else f"提示词: {prompt}")
 
@@ -413,11 +495,12 @@ class GPTImage2Node:
             }
 
             timeout = self.DEFAULT_TIMEOUT
-            self.log(f"⏱️ 预计生成时间: {quality}+{size} 可能需要 2-5 分钟")
+            self.log(f"⏱️ 预计生成时间: {real_quality}+{real_size} 可能需要 2-5 分钟")
 
             # 构建请求体（n 个并发请求复用同一份数据）
             body, files_list = self.build_request(
-                endpoint, prompt, size, quality, output_format, output_compression,
+                endpoint, model_id, cfg, prompt, real_size, real_quality,
+                output_format, output_compression, background,
                 input_image, mask_image
             )
 
@@ -494,11 +577,13 @@ class GPTImage2Node:
 
             usage_info = ""
             if has_usage:
+                cost = len(images) * 0.03
                 usage_info = (
                     f"\n\n## Token 使用量（{n} 张合计）"
                     f"\n- 输入: {usage_total['input_tokens']}"
                     f"\n- 输出: {usage_total['output_tokens']}"
                     f"\n- 总计: {usage_total['total_tokens']}"
+                    f"\n\n## 费用估算\n- 成功 {len(images)} 张 × $0.03 ≈ ${cost:.2f}（1K/2K/4K 同价）"
                 )
 
             if not images:
@@ -506,12 +591,23 @@ class GPTImage2Node:
                 joined = "\n".join(errors)
                 hint = ""
                 if "状态码 400" in joined:
-                    hint = "\n\n💡 可能的原因：\n• size 参数不符合约束（两边必须是 16 的倍数，最大边 ≤ 3840）\n• 误传了 input_fidelity 参数（GPT Image 2 不支持）\n• 尝试使用 background: transparent（不支持）"
+                    hint = (
+                        "\n\n💡 可能的原因：\n"
+                        "• size 不在该模型的 30 种预设里（反向 -vip 模型要求严格匹配）\n"
+                        "• quality 档位不被该模型接受（xhigh / max 仅 2.5 支持）\n"
+                        "• 误传了该模型不支持的参数"
+                    )
                 elif "状态码 403" in joined:
                     hint = "\n\n💡 内容审核拦截，请尝试调整 prompt 或设置 moderation: low"
+                elif "状态码 500" in joined:
+                    hint = (
+                        "\n\n💡 上游 500 常见原因：\n"
+                        "• 4K 尺寸 + high/max 画质更容易触发 OpenAI 计算波动，建议降到 2K Recommended\n"
+                        "• 5xx 不计费，可直接重试"
+                    )
                 elif "超时" in joined:
                     hint = (
-                        "\n\n💡 建议\n• high 画质 + 2K/4K 实测可能需要 3-5 分钟\n"
+                        "\n\n💡 建议\n• high/max 画质 + 2K/4K 实测可能需要 3-5 分钟\n"
                         f"• 当前超时已设置为 {timeout} 秒，可减少生成数量或降低画质后重试"
                     )
                 self.log(error_msg)
@@ -551,3 +647,26 @@ NODE_CLASS_MAPPINGS = {
 NODE_DISPLAY_NAME_MAPPINGS = {
     "GPTImage2": "GPT Image 2 Generator"
 }
+
+WEB_DIRECTORY = "js"
+
+# ============================================================
+# 给前端 JS 用的模型能力接口：GET /gpt-image2/models
+# 前端靠它实现"切换模型 -> 动态收窄 size / quality 下拉项"。
+# 注册失败不影响节点本身：JS 会降级为显示全部选项，Python 侧仍会做参数收敛。
+# ============================================================
+try:
+    from aiohttp import web
+    from server import PromptServer
+
+    @PromptServer.instance.routes.get("/gpt-image2/models")
+    async def _gpt_image2_model_registry(request):
+        return web.json_response(registry_payload())
+
+    @PromptServer.instance.routes.get("/gpt-image2/ping")
+    async def _gpt_image2_ping(request):
+        return web.json_response({"ok": True})
+except Exception as e:  # pragma: no cover - 仅在新版 ComfyUI 才存在
+    print(f"[GPT Image 2] 跳过模型能力接口注册: {e}")
+
+__all__ = ['NODE_CLASS_MAPPINGS', 'NODE_DISPLAY_NAME_MAPPINGS', 'WEB_DIRECTORY']
