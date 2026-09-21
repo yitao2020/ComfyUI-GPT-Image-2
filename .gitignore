@@ -25,3 +25,8 @@ ENV/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local workspace artifacts (never published)
+.workbuddy/
+*_backup_*.py
+.pytest_cache/

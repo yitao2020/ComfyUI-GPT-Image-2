@@ -590,7 +590,11 @@ class GPTImage2Node:
                 error_msg = f"全部 {n} 张图像生成失败"
                 joined = "\n".join(errors)
                 hint = ""
-                if "状态码 400" in joined:
+                if ("insufficient_user_quota" in joined.lower()
+                        or "insufficient_quota" in joined.lower()
+                        or ("quota" in joined.lower() and "not enough" in joined.lower())):
+                    hint = "\n\n💡 API 额度不足，请检查服务商账户余额及 API Key 配额。修改提示词无法解决额度不足。"
+                elif "状态码 400" in joined:
                     hint = (
                         "\n\n💡 可能的原因：\n"
                         "• size 不在该模型的 30 种预设里（反向 -vip 模型要求严格匹配）\n"
@@ -598,7 +602,7 @@ class GPTImage2Node:
                         "• 误传了该模型不支持的参数"
                     )
                 elif "状态码 403" in joined:
-                    hint = "\n\n💡 内容审核拦截，请尝试调整 prompt 或设置 moderation: low"
+                    hint = "\n\n💡 服务商拒绝访问（403），请根据上面的错误详情检查 API Key 权限、模型权限或内容限制。403 不一定是内容审核。"
                 elif "状态码 500" in joined:
                     hint = (
                         "\n\n💡 上游 500 常见原因：\n"
