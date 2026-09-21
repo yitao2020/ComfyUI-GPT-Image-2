@@ -15,7 +15,7 @@ let currentJobs = [];
 const results = installResultNodes(app, api, LiteGraph);
 const controls = installNodeControls(app, api, { submit,
     cancel: async id => { await request(`/jobs/${id}/cancel`, { method: 'POST' }); await refresh(); },
-    showHistory: () => { show(); refresh(); }, getJobs: () => currentJobs });
+    showHistory: () => { panel.hidden = !panel.hidden; if (!panel.hidden) refresh(); }, getJobs: () => currentJobs });
 
 async function request(path, options = {}) {
     const response = await api.fetchApi(`/api-immediate${path}`, {
@@ -167,7 +167,7 @@ app.registerExtension({
         #api-immediate-panel {font:13px/1.5 system-ui,sans-serif;color:#e9eef7;z-index:10000;}
         #api-immediate-panel {position:fixed;right:18px;top:72px;width:min(460px,calc(100vw - 36px));max-height:calc(100vh - 160px);overflow:auto;background:#111b2c;border:1px solid #41516a;border-radius:12px;box-shadow:0 12px 40px #0008;padding:16px;box-sizing:border-box;}
         #api-immediate-panel[hidden] {display:none!important;}
-        #api-immediate-panel header {display:flex;align-items:center;justify-content:space-between;font-size:17px;}
+        #api-immediate-panel header {display:flex;align-items:center;justify-content:space-between;font-size:17px;position:sticky;top:-16px;z-index:1;background:#111b2c;margin:-16px -16px 0;padding:12px 16px;border-bottom:1px solid #344159;}
         #api-immediate-panel button {background:#26497a;color:#fff;border:1px solid #5878a2;border-radius:6px;padding:6px 10px;margin:4px 6px 4px 0;cursor:pointer;}
         #api-immediate-panel p {white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0;color:#bac9df;}
         #api-immediate-panel small {display:block;color:#a7b8d0;margin:5px 0;}
@@ -182,7 +182,10 @@ app.registerExtension({
         panel.id = 'api-immediate-panel';
         panel.hidden = true;
         const header = element('header');
-        header.append(element('strong', 'API 独立并发'), button('收起', () => { panel.hidden = true; }));
+        const closeButton = button('收起 ×', () => { panel.hidden = true; });
+        closeButton.title = '收起生成记录（不会停止正在生成的任务）';
+        closeButton.setAttribute('aria-label', '收起生成记录');
+        header.append(element('strong', 'API 独立并发'), closeButton);
         panel.append(header, element('p', '每次点击启动新任务并新建保存图像结果节点，不等待上一批。图片自动保存在 output/api_immediate。'));
         panel.append(button('运行选中 API 节点', () => submit(activeNodes(true))),
             button('运行全部 API 节点', () => submit(activeNodes(false))));
