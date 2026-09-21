@@ -98,7 +98,8 @@ class JobManager:
                 if job['status'] == 'cancelled':
                     return
             # Unique filenames per job/request; image encoding never holds the manager lock.
-            images = self.save(image, job['id'], index)
+            prefix = f"{job['node_type']}_{job['id'][:8]}"
+            images = self.save(image, prefix, index)
             with self.lock:
                 if job['status'] != 'cancelled':
                     job['items'][index].update(status='completed', images=images)

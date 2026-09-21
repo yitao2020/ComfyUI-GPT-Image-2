@@ -165,8 +165,13 @@ class RealAdapterTests(unittest.TestCase):
                     self.assertEqual(tuple(tensor.shape), (1, 8, 8, 3))
                     self.assertEqual(post.call_count, 1)
                     self.assertEqual(count, 2)
-                    first = backend.save_images(tensor, 'a' * 32, 0, output)
-                    second = backend.save_images(tensor, 'b' * 32, 0, output)
+                    prefix = f'{kind}_a1b2c3d4'
+                    first = backend.save_images(tensor, prefix, 0, output)
+                    original = (Path(output) / 'api_immediate' / first[0]['filename']).read_bytes()
+                    second = backend.save_images(tensor, prefix, 0, output)
+                    self.assertEqual(first[0]['filename'], f'{prefix}_1.png')
+                    self.assertEqual(second[0]['filename'], f'{prefix}_2.png')
+                    self.assertEqual((Path(output) / 'api_immediate' / first[0]['filename']).read_bytes(), original)
                     self.assertNotEqual(first, second)
                     self.assertEqual(len(list(Path(output).rglob('*.png'))), 2)
                     response.status_code = 429

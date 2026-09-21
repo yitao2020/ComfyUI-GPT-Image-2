@@ -156,15 +156,26 @@ def prepare(payload, registry):
     return count, request_one, [key]
 
 
-def save_images(tensor, job_id, index, output_dir):
+def save_images(tensor, file_prefix, index, output_dir):
     import numpy as np
     from PIL import Image
     directory = Path(output_dir) / 'api_immediate'
     directory.mkdir(parents=True, exist_ok=True)
     results = []
-    for offset, frame in enumerate(tensor):
-        filename = f'{job_id}_{index + 1}_{offset + 1}.png'
+    sequence = index + 1
+    for frame in tensor:
         array = np.clip(frame.detach().cpu().numpy() * 255, 0, 255).astype(np.uint8)
-        Image.fromarray(array).save(directory / filename)
+        # Exclusive creation prevents overwrites, including short-ID collisions and
+        # concurrent requests returning more than one image.
+        while True:
+            filename = f'{file_prefix}_{sequence}.png'
+            sequence += 1
+            try:
+                stream = (directory / filename).open('xb')
+                break
+            except FileExistsError:
+                continue
+        with stream:
+            Image.fromarray(array).save(stream, format='PNG')
         results.append({'filename': filename, 'subfolder': 'api_immediate', 'type': 'output'})
     return results
