@@ -65,6 +65,9 @@ SIZES_PRESET = SIZES_1K + SIZES_2K + SIZES_4K
 # 旧版本节点沿用过、但不在文档 30 种表里的尺寸，保留以兼容历史工作流
 SIZES_LEGACY = ["1024x1024", "1536x1024", "1024x1536"]
 
+# 额外可选尺寸，按原始宽高提交给上游。
+SIZES_CUSTOM = ["768x1024"]  # 3:4  Portrait
+
 # auto 只对官方代理线有意义；反向 -vip 线不接受
 SIZE_AUTO = "auto"
 
@@ -97,7 +100,7 @@ def _cfg(version, qualities, sizes, default_size, default_quality, background, l
     return {
         "version": version,          # "2.0" / "2.5"
         "qualities": qualities,
-        "sizes": sizes,
+        "sizes": sizes + SIZES_CUSTOM,
         "default_size": default_size,
         "default_quality": default_quality,
         "background": background,    # 是否支持 background: transparent
@@ -188,7 +191,7 @@ def is_plausible_model_id(raw):
 MODEL_OPTIONS = list(MODEL_REGISTRY.keys())
 
 # 所有 size 的并集：JS 未生效时 UI 也能选到任何尺寸
-ALL_SIZES = [SIZE_AUTO] + SIZES_LEGACY + SIZES_PRESET
+ALL_SIZES = [SIZE_AUTO] + SIZES_LEGACY + SIZES_PRESET + SIZES_CUSTOM
 
 # 所有 quality 的并集
 ALL_QUALITIES = QUALITIES_V25
