@@ -1,5 +1,15 @@
 # ComfyUI GPT Image 2 插件
 
+## GPT Image 2.6
+
+模型下拉新增 `gpt-image-2.6-flare`（快速生成/编辑）和 `gpt-image-2.6-sunburst`（精细视觉/编辑）。
+沿用现有密钥、节点结构和独立并发功能，旧模型及默认选择保持不变。
+依据 [API易文档](https://docs.apiyi.com/api-capabilities/gpt-image-2/overview)，2.6 支持
+`auto / low / medium / high / xhigh / max` 画质、透明背景以及现有尺寸选项（含 `768x1024`）。
+新模型配置默认画质为 `medium`；透明背景请使用 PNG/WebP，JPEG 不支持透明。
+本插件接入 PNG/JPEG/WebP 静态生图、参考图编辑和 mask 流程；未接入 GIF、SVG 或 markup 专用输入。
+不发送文档注明尚未兼容的 `complexity`。更新后重启 ComfyUI 并强制刷新浏览器。
+
 ## 内置“立即生成”与跨批次并发
 
 无需安装额外并发插件。点击节点内 **▶ 立即生成**，上一批运行时仍可继续提交；

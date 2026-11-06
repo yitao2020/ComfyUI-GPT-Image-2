@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-GPT Image 2 / GPT Image 2.5 模型能力表
+GPT Image 2 / 2.5 / 2.6 模型能力表
 
 数据来源：https://docs.apiyi.com/en/api-capabilities/gpt-image-2-vip/overview (2026-09)
 
@@ -98,7 +98,7 @@ QUALITY_UPGRADE = {
 
 def _cfg(version, qualities, sizes, default_size, default_quality, background, line, note):
     return {
-        "version": version,          # "2.0" / "2.5"
+        "version": version,          # "2.0" / "2.5" / "2.6"
         "qualities": qualities,
         "sizes": sizes + SIZES_CUSTOM,
         "default_size": default_size,
@@ -174,6 +174,27 @@ MODEL_REGISTRY = {
     ),
     # 别名
     "gpt-image-2.5-vip": "__alias__:gpt-image-2.5-sunburst-vip",
+    # 2.6 官转模型：https://docs.apiyi.com/api-capabilities/gpt-image-2/overview
+    "gpt-image-2.6-flare": _cfg(
+        version="2.6",
+        qualities=QUALITIES_V25,
+        sizes=[SIZE_AUTO] + SIZES_LEGACY + SIZES_PRESET,
+        default_size="1024x1024",
+        default_quality="medium",
+        background=True,
+        line="official",
+        note="官方代理线 · 2.6 快速生成与编辑 · PNG/JPEG/WebP",
+    ),
+    "gpt-image-2.6-sunburst": _cfg(
+        version="2.6",
+        qualities=QUALITIES_V25,
+        sizes=[SIZE_AUTO] + SIZES_LEGACY + SIZES_PRESET,
+        default_size="1024x1024",
+        default_quality="medium",
+        background=True,
+        line="official",
+        note="官方代理线 · 2.6 精细视觉与编辑 · PNG/JPEG/WebP",
+    ),
 }
 
 DEFAULT_MODEL = "gpt-image-2"
@@ -230,13 +251,13 @@ def sanitize_quality(model_id, cfg, quality, log=None):
     if q in cfg["qualities"]:
         return q, False
 
-    if cfg["version"] == "2.5":
+    if cfg["version"] in ("2.5", "2.6"):
         # 老参数往 2.5 上套：按 token 量对齐升级
         mapped = QUALITY_UPGRADE.get(q, cfg["default_quality"])
         if mapped not in cfg["qualities"]:
             mapped = cfg["default_quality"]
         if log:
-            log(f"⚠️ {model_id} 不接受 quality={q}，已对齐为 {mapped}（2.5 档位比 2.0 密）")
+            log(f"⚠️ {model_id} 不接受 quality={q}，已对齐为 {mapped}（{cfg['version']} 画质档位）")
         return mapped, True
 
     mapped = QUALITY_DOWNGRADE.get(q, cfg["default_quality"])

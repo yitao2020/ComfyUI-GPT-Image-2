@@ -147,6 +147,46 @@ class RealAdapterTests(unittest.TestCase):
         values['prompt'] = 'Test image'
         return {'target': '1', 'prompt': {'1': {'class_type': kind, 'inputs': values}}}
 
+    @unittest.skipUnless((ROOT / 'gpt_image2_node.py').exists(), 'GPT repository only')
+    def test_gpt26_generation_and_edit_contract(self):
+        torch = self.gpt.torch
+        cls = self.registry['GPTImage2']
+        obj = cls()
+        for model in ('gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'):
+            self.assertIn(model, cls.INPUT_TYPES()['required']['model'][0])
+            for quality in ('auto', 'low', 'medium', 'high', 'xhigh', 'max'):
+                mid, cfg, q, size = obj.prepare_model(model, quality, '768x1024')
+                self.assertEqual((mid, cfg['version'], q, size), (model, '2.6', quality, '768x1024'))
+                for mode in ('text_to_image', 'image_edit'):
+                    body, files = obj.build_request(obj.API_ENDPOINTS[mode], mid, cfg, 'test',
+                        size, q, 'png', 100, 'transparent',
+                        torch.zeros((1, 8, 8, 3)) if mode == 'image_edit' else None,
+                        torch.ones((1, 8, 8)) if mode == 'image_edit' else None)
+                    self.assertEqual(body['model'], model)
+                    self.assertEqual(body['size'], '768x1024')
+                    self.assertEqual(body['quality'], quality)
+                    self.assertEqual(body['background'], 'transparent')
+                    self.assertFalse({'n', 'complexity', 'response_format', 'input_fidelity'} & body.keys())
+                    if mode == 'image_edit':
+                        self.assertEqual([f[0] for f in files], ['image[]', 'mask'])
+
+    @unittest.skipUnless((ROOT / 'gpt_image2_node.py').exists(), 'GPT repository only')
+    def test_gpt26_immediate_adapter(self):
+        from unittest.mock import Mock
+        for model in ('gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'):
+            data = self.make_payload('GPTImage2')
+            data['prompt']['1']['inputs'].update(model=model, quality='max', size='768x1024', num_images='2')
+            backend.validate(data, self.registry)
+            count, call, _ = backend.prepare(data, self.registry)
+            self.assertEqual(count, 2)
+            response = Mock(status_code=200)
+            response.json.return_value = {'data': [{'b64_json': self.b64}]}
+            with patch.object(self.gpt.requests, 'post', return_value=response) as post:
+                image, error = call(0)
+            self.assertFalse(error)
+            self.assertEqual(tuple(image.shape), (1, 8, 8, 3))
+            self.assertEqual(post.call_args.kwargs['json']['model'], model)
+
     def test_actual_providers_mock_http_save_distinct_images_and_report_http_errors(self):
         from unittest.mock import Mock
         for kind in self.registry:
